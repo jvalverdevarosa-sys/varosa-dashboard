@@ -165,7 +165,8 @@ footer img { height: 36px; opacity: 0.85; }
       <div class="kpi-label">Monto Facturado</div>
       <div class="kpi-gauge-wrap"><canvas id="g2" width="90" height="50"></canvas><span class="kpi-pct" id="g2pct"></span></div>
       <div class="kpi-value" id="kpi-monto">—</div>
-      <div class="kpi-sub">sin IVA</div>
+      <div class="kpi-sub">solo facturas · sin IVA</div>
+      <div class="kpi-sub" id="kpi-monto-sub" style="font-size:0.62rem;color:#718096;margin-top:2px">—</div>
       <div class="kpi-trend trend-up" id="kpi-monto-sub2">—</div>
     </div>
     <div class="kpi-card">
@@ -176,10 +177,10 @@ footer img { height: 36px; opacity: 0.85; }
       <div class="kpi-trend trend-neutral" id="kpi-est-sub2">—</div>
     </div>
     <div class="kpi-card">
-      <div class="kpi-label">OVs Abiertas</div>
+      <div class="kpi-label">OVs Generadas</div>
       <div class="kpi-gauge-wrap"><canvas id="g4" width="90" height="50"></canvas><span class="kpi-pct" id="g4pct"></span></div>
       <div class="kpi-value" id="kpi-ovs">—</div>
-      <div class="kpi-sub">sin facturar completo</div>
+      <div class="kpi-sub">órdenes de venta esta semana</div>
       <div class="kpi-criticas-badge" id="kpi-crit-badge" style="display:none"><span class="criticas-dot"></span><span id="kpi-crit-num">0</span> críticas <span style="font-weight:500;color:#a07800;font-size:0.65rem">(+30 días)</span></div>
     </div>
   </div>
@@ -448,35 +449,79 @@ function cargarDatos() {
 
 // ── PROCESAR ─────────────────────────────────────────────────
 function procesarDatos(data) {
-  // El webhook devuelve datosSemana y ovsCriticas directamente
-  // Filtramos registros sin nombre (totales o vacíos)
-  const ds = (data.datosSemana || []).filter(d => d.v && d.v.trim() !== '' && d.v !== 'Grupo VAROSA');
+  const EXCLUIR = ['Grupo VAROSA', 'Bodega VAROSA'];
+
+  // ── Detectar formato de datos ──────────────────────────────
+  // El webhook puede enviar datos en dos formatos:
+  // A) Formato legacy: datosSemana con campos d.v, d.monto, d.fact, d.est, d.ovs
+  // B) Formato Zoho raw: datosSemana con Vendedor, Tipo_Documento, Total_BCY, Cantidad_Documentos
+  const rawEmbudo = data.datosSemana || [];
+  const esFormatoRaw = rawEmbudo.length > 0 && rawEmbudo[0].Vendedor !== undefined;
+
+  let ds; // array final por vendedor con campos: v, montoFact, montoOvs, montoEst, fact, ovs, est, lineas
+
+  if (esFormatoRaw) {
+    // ── Formato B: transformar desde Zoho raw ──
+    const vendedoresMap = {};
+    rawEmbudo
+      .filter(r => r.Vendedor && r.Vendedor.trim() !== '' && !EXCLUIR.includes(r.Vendedor))
+      .forEach(r => {
+        const v = r.Vendedor.trim();
+        if (!vendedoresMap[v]) vendedoresMap[v] = { v, montoFact:0, montoOvs:0, montoEst:0, fact:0, ovs:0, est:0, lineas:0 };
+        const tipo = r.Tipo_Documento;
+        const monto = parseFloat(r.Total_BCY) || 0;
+        const cant  = parseInt(r.Cantidad_Documentos) || 0;
+        const lin   = parseInt(r.Total_Lineas) || 0;
+        if (tipo === 'Factura')       { vendedoresMap[v].montoFact += monto; vendedoresMap[v].fact += cant; vendedoresMap[v].lineas += lin; }
+        else if (tipo === 'Orden de Venta') { vendedoresMap[v].montoOvs += monto; vendedoresMap[v].ovs += cant; }
+        else if (tipo === 'Estimación')     { vendedoresMap[v].montoEst += monto; vendedoresMap[v].est += cant; }
+      });
+    ds = Object.values(vendedoresMap);
+  } else {
+    // ── Formato A: legacy (si n8n ya agrega los campos separados) ──
+    ds = rawEmbudo.filter(d => d.v && d.v.trim() !== '' && !EXCLUIR.includes(d.v))
+      .map(d => ({
+        v:         d.v,
+        montoFact: d.montoFact ?? d.monto ?? 0,  // usar montoFact si existe, si no monto (fallback)
+        montoOvs:  d.montoOvs  ?? 0,
+        montoEst:  d.montoEst  ?? 0,
+        fact:      d.fact  ?? 0,
+        ovs:       d.ovs   ?? 0,
+        est:       d.est   ?? 0,
+        lineas:    d.lineas ?? 0,
+      }));
+  }
+
   const ovs = data.ovsCriticas || [];
 
   // ── Calcular KPIs desde datosSemana ──
-  const totalFact  = ds.reduce((s,d)=>s+d.fact,0);
-  const totalMonto = ds.reduce((s,d)=>s+d.monto,0);
-  const totalEst   = ds.reduce((s,d)=>s+d.est,0);
-  const totalOvs   = ds.reduce((s,d)=>s+d.ovs,0);
-  const criticas   = ovs.filter(o=>o.estado==='mas de 30 dias').length;
+  const totalFact      = ds.reduce((s,d)=>s+d.fact,0);
+  const totalMontoFact = ds.reduce((s,d)=>s+d.montoFact,0);   // FIX 1: solo facturas
+  const totalMontoOvs  = ds.reduce((s,d)=>s+d.montoOvs,0);
+  const totalMontoEst  = ds.reduce((s,d)=>s+d.montoEst,0);
+  const totalMonto     = totalMontoFact;                        // KPI principal = solo facturas
+  const totalEst       = ds.reduce((s,d)=>s+d.est,0);
+  const totalOvsGen    = ds.reduce((s,d)=>s+d.ovs,0);          // FIX 3: OVs totales generadas
+  const totalOvs       = ovs.length;                            // OVs críticas abiertas (sin facturar)
+  const criticas       = ovs.filter(o=>o.estado==='mas de 30 dias').length;
 
   // Gauges KPI (% de meta)
   document.getElementById('kpi-fact').textContent  = totalFact.toLocaleString('es-CR');
-  document.getElementById('kpi-monto').textContent = '₡'+(totalMonto/1000000).toFixed(1)+'M';
+  document.getElementById('kpi-monto').textContent = '₡'+(totalMontoFact/1000000).toFixed(1)+'M';
   document.getElementById('kpi-est').textContent   = totalEst;
-  document.getElementById('kpi-ovs').textContent   = totalOvs;
+  document.getElementById('kpi-ovs').textContent   = totalOvsGen;  // FIX 3: OVs generadas esta semana
 
   const pctFact  = Math.round(totalFact/META_FACT*100);
-  const pctMonto = Math.round((totalMonto/1000000)/META_MONTO*100);
+  const pctMonto = Math.round((totalMontoFact/1000000)/META_MONTO*100);
   const pctEst   = Math.round(totalEst/META_EST*100);
-  const pctOvs   = Math.round(totalOvs/META_OVS*100);
+  const pctOvs   = Math.round(totalOvsGen/META_OVS*100);
 
   drawGauge('g1','g1pct', pctFact,  '#325895');
   drawGauge('g2','g2pct', pctMonto, '#4672B1');
   drawGauge('g3','g3pct', pctEst,   '#15C9E4');
   drawGauge('g4','g4pct', pctOvs,   '#FFAD00');
 
-  // Sub-textos KPI
+  // Sub-textos KPI: monto muestra desglose OVs + Est como info adicional
   const setTrend = (id, pct) => {
     const el = document.getElementById(id);
     if(pct>=80){ el.textContent='↑ '+pct+'% de meta'; el.className='kpi-trend trend-up'; }
@@ -486,6 +531,11 @@ function procesarDatos(data) {
   setTrend('kpi-fact-sub2',  pctFact);
   setTrend('kpi-monto-sub2', pctMonto);
   setTrend('kpi-est-sub2',   pctEst);
+
+  // Desglose de montos bajo el KPI de monto facturado
+  const elMontoSub = document.getElementById('kpi-monto-sub');
+  if(elMontoSub) elMontoSub.textContent =
+    'OVs: ₡'+(totalMontoOvs/1000000).toFixed(1)+'M · Est: ₡'+(totalMontoEst/1000000).toFixed(1)+'M';
 
   if(criticas>0){
     const b=document.getElementById('kpi-crit-badge');
@@ -608,7 +658,7 @@ function buildDonut(ds) {
 // ── MONTO VENDEDOR (resumen) ──────────────────────────────────
 function buildMontoVend(ds) {
   const labels=ds.map(d=>d.v.split(' ')[0]);
-  const data=ds.map(d=>+(d.monto/1000000).toFixed(1));
+  const data=ds.map(d=>+(d.montoFact/1000000).toFixed(1));
   new Chart(document.getElementById('chart-monto-vend'),{
     type:'bar',
     data:{labels,datasets:[{label:'₡M',data,backgroundColor:COLORS,borderRadius:8}]},
@@ -619,7 +669,7 @@ function buildMontoVend(ds) {
 // ── TICKET ────────────────────────────────────────────────────
 function buildTicket(ds) {
   const labels=ds.map(d=>d.v.split(' ')[0]);
-  const data=ds.map(d=>Math.round(d.monto/d.fact));
+  const data=ds.map(d=>Math.round(d.montoFact/d.fact));
   new Chart(document.getElementById('chart-ticket'),{
     type:'bar',
     data:{labels,datasets:[{label:'₡ ticket',data,backgroundColor:COLORS,borderRadius:8}]},
@@ -632,7 +682,7 @@ function buildVendedorMonto(ds) {
   const labels=ds.map(d=>d.v.split(' ')[0]);
   new Chart(document.getElementById('chart-vendedor-monto'),{
     type:'bar',
-    data:{labels,datasets:[{label:'₡M',data:ds.map(d=>+(d.monto/1000000).toFixed(1)),backgroundColor:COLORS,borderRadius:8}]},
+    data:{labels,datasets:[{label:'₡M',data:ds.map(d=>+(d.montoFact/1000000).toFixed(1)),backgroundColor:COLORS,borderRadius:8}]},
     options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{x:{grid:{display:false}},y:{grid:{color:'#f0f4f9'}}}}
   });
 }
@@ -661,7 +711,7 @@ function buildTablaVendedores(ds) {
       <td><span class="color-dot" style="background:${COLORS[i]}"></span>${d.v.split(' ').slice(0,2).join(' ')}</td>
       <td>${d.est}</td><td>${d.ovs}</td><td>${d.fact}</td>
       <td>${d.fact>0?(d.lineas/d.fact).toFixed(1):'—'}</td>
-      <td>₡${(d.monto/1000000).toFixed(2)}M</td>
+      <td>₡${(d.montoFact/1000000).toFixed(2)}M</td>
       <td><span class="status-badge ${conv>=70?'badge-green':conv>=50?'badge-blue':'badge-yellow'}">${conv}%</span></td>
       <td><canvas id="${spId}" class="sparkline" width="80" height="28"></canvas></td>
     </tr>`;
@@ -743,7 +793,7 @@ function buildHistorico(ds) {
   // Monto
   new Chart(document.getElementById('chart-hist-monto'),{
     type:'bar',
-    data:{labels,datasets:[{label:'₡M',data:ds.map(d=>+(d.monto/1000000).toFixed(1)),backgroundColor:COLORS,borderRadius:8}]},
+    data:{labels,datasets:[{label:'₡M',data:ds.map(d=>+(d.montoFact/1000000).toFixed(1)),backgroundColor:COLORS,borderRadius:8}]},
     options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{x:{grid:{display:false}},y:{grid:{color:'#f0f4f9'}}}}
   });
   // Líneas
@@ -757,16 +807,16 @@ function buildHistorico(ds) {
 // ── TABLA HISTÓRICO ───────────────────────────────────────────
 function buildTablaHistorico(ds) {
   const tb=document.getElementById('tabla-historico'); tb.innerHTML='';
-  const montoTotal=ds.reduce((s,d)=>s+d.monto,0)||1;
+  const montoTotal=ds.reduce((s,d)=>s+d.montoFact,0)||1;
   ds.forEach((d,i)=>{
     const linProm=d.fact>0?(d.lineas/d.fact).toFixed(1):'—';
-    const ticket=d.fact>0?'₡'+(d.monto/d.fact).toLocaleString('es-CR',{maximumFractionDigits:0}):'—';
-    const share=Math.round(d.monto/montoTotal*100);
+    const ticket=d.fact>0?'₡'+(d.montoFact/d.fact).toLocaleString('es-CR',{maximumFractionDigits:0}):'—';
+    const share=Math.round(d.montoFact/montoTotal*100);
     const spId='sph_'+i;
     tb.innerHTML+=`<tr>
       <td><span class="color-dot" style="background:${COLORS[i]}"></span>${d.v.split(' ').slice(0,2).join(' ')}</td>
       <td>${d.fact}</td><td>${d.ovs}</td><td>${d.est}</td>
-      <td>₡${(d.monto/1000000).toFixed(2)}M</td>
+      <td>₡${(d.montoFact/1000000).toFixed(2)}M</td>
       <td>${linProm}</td><td>${ticket}</td>
       <td><canvas id="${spId}" class="sparkline" width="80" height="28"></canvas> <span style="font-size:0.65rem;color:#718096">${share}% del total</span></td>
     </tr>`;
