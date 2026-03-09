@@ -195,6 +195,16 @@ footer img { height: 36px; opacity: 0.85; }
   </div>
   <div class="charts-grid">
     <div class="chart-card">
+      <div class="chart-title">Órdenes de Venta por Vendedor — Semana Actual</div>
+      <div class="ranking-list" id="ranking-ovs"></div>
+    </div>
+    <div class="chart-card">
+      <div class="chart-title">Estimaciones por Vendedor — Semana Actual</div>
+      <div class="ranking-list" id="ranking-est"></div>
+    </div>
+  </div>
+  <div class="charts-grid">
+    <div class="chart-card">
       <div class="chart-title">Monto Facturado por Vendedor (₡M)</div>
       <div class="chart-container" style="height:220px"><canvas id="chart-monto-vend"></canvas></div>
     </div>
@@ -517,6 +527,8 @@ function procesarDatos(data) {
 
   // ── Construir charts ──
   buildRanking(ds);
+  buildRankingOvs(ds);
+  buildRankingEst(ds);
   buildDonut(ds);
   buildMontoVend(ds);
   buildTicket(ds);
@@ -543,6 +555,42 @@ function buildRanking(ds) {
         <div class="rank-bar-wrap"><div class="rank-bar" style="width:${Math.round(d.fact/max*100)}%;background:${COLORS[i]}"></div></div>
       </div>
       <div class="rank-amount">${d.fact} fact.</div>
+    </div>`;
+  });
+}
+
+// ── RANKING OVs ──────────────────────────────────────────────
+function buildRankingOvs(ds) {
+  const sorted=[...ds].filter(d=>d.ovs>0).sort((a,b)=>b.ovs-a.ovs);
+  const max=sorted[0]?.ovs||1;
+  const c=document.getElementById('ranking-ovs'); c.innerHTML='';
+  if(sorted.length===0){ c.innerHTML='<div style="color:#aaa;font-size:0.85rem;padding:8px">Sin OVs generadas esta semana</div>'; return; }
+  sorted.forEach((d,i)=>{
+    c.innerHTML+=`<div class="ranking-item">
+      <div class="rank-num" style="background:${COLORS[i]}">${i+1}</div>
+      <div class="rank-info">
+        <div class="rank-name">${d.v.split(' ').slice(0,2).join(' ')}</div>
+        <div class="rank-bar-wrap"><div class="rank-bar" style="width:${Math.round(d.ovs/max*100)}%;background:${COLORS[i]}"></div></div>
+      </div>
+      <div class="rank-amount">${d.ovs} OVs</div>
+    </div>`;
+  });
+}
+
+// ── RANKING ESTIMACIONES ──────────────────────────────────────
+function buildRankingEst(ds) {
+  const sorted=[...ds].filter(d=>d.est>0).sort((a,b)=>b.est-a.est);
+  const max=sorted[0]?.est||1;
+  const c=document.getElementById('ranking-est'); c.innerHTML='';
+  if(sorted.length===0){ c.innerHTML='<div style="color:#aaa;font-size:0.85rem;padding:8px">Sin estimaciones esta semana</div>'; return; }
+  sorted.forEach((d,i)=>{
+    c.innerHTML+=`<div class="ranking-item">
+      <div class="rank-num" style="background:${COLORS[i]}">${i+1}</div>
+      <div class="rank-info">
+        <div class="rank-name">${d.v.split(' ').slice(0,2).join(' ')}</div>
+        <div class="rank-bar-wrap"><div class="rank-bar" style="width:${Math.round(d.est/max*100)}%;background:${COLORS[i]}"></div></div>
+      </div>
+      <div class="rank-amount">${d.est} est.</div>
     </div>`;
   });
 }
